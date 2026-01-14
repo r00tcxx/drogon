@@ -300,6 +300,7 @@ set(DROGON_SOURCES
     lib/src/MultipartStreamParser.cc
     lib/src/SseClientContext.cc
     lib/src/SseEventParser.cc
+    lib/src/SseWriter.cc
     lib/src/NotFound.cc
     lib/src/PluginsManager.cc
     lib/src/PromExporter.cc
@@ -603,6 +604,7 @@ set(DROGON_HEADERS
     lib/inc/drogon/NotFound.h
     lib/inc/drogon/Session.h
     lib/inc/drogon/SseEvent.h
+    lib/inc/drogon/SseWriter.h
     lib/inc/drogon/UploadFile.h
     lib/inc/drogon/WebSocketClient.h
     lib/inc/drogon/WebSocketConnection.h

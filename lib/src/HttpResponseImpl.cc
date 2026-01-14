@@ -473,6 +473,39 @@ HttpResponsePtr HttpResponse::newAsyncStreamResponse(
     return resp;
 }
 
+HttpResponsePtr HttpResponse::newSseResponse(
+    const std::function<void(SseWriterPtr)> &callback,
+    bool disableKickoffTimeout)
+{
+    if (!callback)
+    {
+        LOG_ERROR << "SSE callback is null";
+        auto resp = HttpResponse::newNotFoundResponse();
+        return resp;
+    }
+
+    // Wrap the SSE callback to create an SseWriter from the ResponseStream
+    auto wrappedCallback = [callback](ResponseStreamPtr stream) {
+        // Create an SseWriter that wraps the ResponseStream
+        auto writer = std::make_shared<SseWriter>(std::move(stream));
+        callback(writer);
+    };
+
+    auto resp = std::make_shared<HttpResponseImpl>();
+    resp->setAsyncStreamCallback(wrappedCallback, disableKickoffTimeout);
+    resp->setStatusCode(k200OK);
+    resp->setContentTypeCode(CT_TEXT_EVENT_STREAM);
+
+    // SSE specific headers
+    resp->addHeader("cache-control", "no-cache");
+    resp->addHeader("connection", "keep-alive");
+    // Disable buffering for proxies
+    resp->addHeader("x-accel-buffering", "no");
+
+    AopAdvice::instance().passResponseCreationAdvices(resp);
+    return resp;
+}
+
 void HttpResponseImpl::makeHeaderString(trantor::MsgBuffer &buffer)
 {
     buffer.ensureWritableBytes(128);

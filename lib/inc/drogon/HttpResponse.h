@@ -22,6 +22,7 @@
 #include <drogon/HttpRequest.h>
 #include <drogon/HttpTypes.h>
 #include <drogon/HttpViewData.h>
+#include <drogon/SseWriter.h>
 #include <drogon/utils/Utilities.h>
 #include <json/json.h>
 #include <memory>
@@ -541,6 +542,41 @@ class DROGON_EXPORT HttpResponse
     static HttpResponsePtr newAsyncStreamResponse(
         const std::function<void(ResponseStreamPtr)> &callback,
         bool disableKickoffTimeout = false);
+
+    /// Create a Server-Sent Events (SSE) response
+    /**
+     * @brief Create a response for Server-Sent Events streaming.
+     *
+     * SSE allows the server to push events to clients over a persistent HTTP
+     * connection. The response will have Content-Type: text/event-stream and
+     * use Transfer-Encoding: chunked.
+     *
+     * @param callback Function that receives the SseWriter for sending events.
+     *                 The callback is invoked once the response headers have
+     *                 been sent. Use writer->send() to push events and
+     *                 writer->close() when done.
+     * @param disableKickoffTimeout Set to true to disable the default
+     *                              connection timeout. Useful for long-lived
+     *                              SSE connections.
+     *
+     * @code
+     * auto resp = HttpResponse::newSseResponse(
+     *     [](const SseWriterPtr &writer) {
+     *         // Send events periodically
+     *         writer->send("Hello, SSE!");
+     *         writer->send(SseEvent{
+     *             .event = "update",
+     *             .data = "Some data",
+     *             .id = "1"
+     *         });
+     *         writer->close();
+     *     });
+     * callback(resp);
+     * @endcode
+     */
+    static HttpResponsePtr newSseResponse(
+        const std::function<void(SseWriterPtr)> &callback,
+        bool disableKickoffTimeout = true);
 
     /**
      * @brief Create a custom HTTP response object. For using this template,

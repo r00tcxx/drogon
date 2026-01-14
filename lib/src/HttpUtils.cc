@@ -111,6 +111,8 @@ static const std::unordered_map<
         {CT_TEXT_PLAIN, {{"text/plain"}, "text/plain; charset=utf-8"}},
         {CT_TEXT_XML, {{"text/xml"}, "text/xml; charset=utf-8"}},
         {CT_TEXT_XSL, {{"text/xsl"}, "text/xsl; charset=utf-8"}},
+        {CT_TEXT_EVENT_STREAM,
+         {{"text/event-stream"}, "text/event-stream; charset=utf-8"}},
         {CT_VIDEO_APG, {{"video/apg"}, ""}},
         {CT_VIDEO_AV1, {{"video/av01", "video/av1"}, ""}},
         {CT_VIDEO_QUICKTIME, {{"video/quicktime"}, ""}},
