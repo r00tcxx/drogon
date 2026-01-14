@@ -17,6 +17,7 @@
 #include "HttpRequestImpl.h"
 #include "HttpResponseImpl.h"
 #include "HttpResponseParser.h"
+#include "SseClientContext.h"
 
 #include <drogon/config.h>
 #include <stdlib.h>
@@ -726,3 +727,307 @@ void HttpClientImpl::addSSLConfigs(
         sslConfCmds_.push_back(cmd);
     }
 }
+
+// SSE Implementation
+
+void HttpClientImpl::sendRequestForSse(
+    const HttpRequestPtr &req,
+    const SseEventCallback &eventCallback,
+    const SseClosedCallback &closedCallback,
+    const SseHeadersCallback &headersCallback,
+    double timeout)
+{
+    auto thisPtr = shared_from_this();
+    loop_->runInLoop([thisPtr,
+                      req,
+                      eventCallback = eventCallback,
+                      closedCallback = closedCallback,
+                      headersCallback = headersCallback,
+                      timeout]() mutable {
+        thisPtr->sendRequestForSseInLoop(req,
+                                         std::move(eventCallback),
+                                         std::move(closedCallback),
+                                         std::move(headersCallback),
+                                         timeout);
+    });
+}
+
+void HttpClientImpl::sendRequestForSse(const HttpRequestPtr &req,
+                                       SseEventCallback &&eventCallback,
+                                       SseClosedCallback &&closedCallback,
+                                       SseHeadersCallback &&headersCallback,
+                                       double timeout)
+{
+    auto thisPtr = shared_from_this();
+    loop_->runInLoop([thisPtr,
+                      req,
+                      eventCallback = std::move(eventCallback),
+                      closedCallback = std::move(closedCallback),
+                      headersCallback = std::move(headersCallback),
+                      timeout]() mutable {
+        thisPtr->sendRequestForSseInLoop(req,
+                                         std::move(eventCallback),
+                                         std::move(closedCallback),
+                                         std::move(headersCallback),
+                                         timeout);
+    });
+}
+
+namespace
+{
+struct SseConnectionHolder
+{
+    std::shared_ptr<trantor::TcpClient> client;
+    SseClientContextPtr context;
+    trantor::TimerId timeoutId{0};
+    trantor::EventLoop *loop{nullptr};
+
+    ~SseConnectionHolder()
+    {
+        if (timeoutId != 0 && loop)
+        {
+            loop->invalidateTimer(timeoutId);
+        }
+    }
+};
+}  // namespace
+
+void HttpClientImpl::sendRequestForSseInLoop(const HttpRequestPtr &req,
+                                             SseEventCallback &&eventCallback,
+                                             SseClosedCallback &&closedCallback,
+                                             SseHeadersCallback &&headersCallback,
+                                             double timeout)
+{
+    loop_->assertInLoopThread();
+
+    // Set SSE-specific headers if not already set
+    if (!static_cast<drogon::HttpRequestImpl *>(req.get())->passThrough())
+    {
+        req->addHeader("connection", "Keep-Alive");
+        if (!userAgent_.empty())
+            req->addHeader("user-agent", userAgent_);
+
+        // Set Accept header for SSE
+        if (req->getHeader("accept").empty())
+        {
+            req->addHeader("accept", "text/event-stream");
+        }
+
+        // Disable caching
+        if (req->getHeader("cache-control").empty())
+        {
+            req->addHeader("cache-control", "no-cache");
+        }
+    }
+
+    // Set the host header if not already set
+    if (req->getHeader("host").empty())
+    {
+        if (onDefaultPort())
+        {
+            req->addHeader("host", host());
+        }
+        else
+        {
+            req->addHeader("host", host() + ":" + std::to_string(port()));
+        }
+    }
+
+    // Add cookies
+    for (auto &cookie : validCookies_)
+    {
+        if ((cookie.expiresDate().microSecondsSinceEpoch() == 0 ||
+             cookie.expiresDate() > trantor::Date::now()) &&
+            (cookie.path().empty() || req->path().find(cookie.path()) == 0))
+        {
+            req->addCookie(cookie.key(), cookie.value());
+        }
+    }
+
+    // Create connection holder to manage lifetime
+    auto holder = std::make_shared<SseConnectionHolder>();
+    holder->loop = loop_;
+
+    // Create SSE context
+    holder->context = std::make_shared<SseClientContext>(
+        std::move(eventCallback),
+        std::move(closedCallback),
+        std::move(headersCallback));
+
+    // Create a dedicated TCP client for SSE
+    holder->client = std::make_shared<trantor::TcpClient>(
+        loop_, serverAddr_, "sseClient");
+
+    if (useSSL_ && utils::supportsTls())
+    {
+        auto policy = trantor::TLSPolicy::defaultClientPolicy();
+        policy->setUseOldTLS(useOldTLS_)
+            .setValidate(validateCert_)
+            .setHostname(domain_)
+            .setConfCmds(sslConfCmds_)
+            .setCertPath(clientCertPath_)
+            .setKeyPath(clientKeyPath_);
+        holder->client->enableSSL(std::move(policy));
+    }
+
+    auto thisPtr = shared_from_this();
+    std::weak_ptr<HttpClientImpl> weakPtr = thisPtr;
+    std::weak_ptr<SseConnectionHolder> weakHolder = holder;
+
+    // Set up timeout if specified
+    if (timeout > 0)
+    {
+        holder->timeoutId = loop_->runAfter(timeout, [weakHolder]() {
+            auto h = weakHolder.lock();
+            if (!h)
+                return;
+            auto ctx = h->context;
+            if (ctx && !ctx->isTimedOut() &&
+                ctx->status() != SseClientContext::Status::Closed)
+            {
+                ctx->setTimedOut();
+                ctx->onClose(ReqResult::Timeout);
+                if (h->client)
+                {
+                    h->client->disconnect();
+                }
+            }
+        });
+    }
+
+    if (sockOptCallback_)
+    {
+        holder->client->setSockOptCallback(sockOptCallback_);
+    }
+
+    holder->client->setConnectionCallback(
+        [weakPtr, weakHolder, req](const trantor::TcpConnectionPtr &connPtr) {
+            auto thisPtr = weakPtr.lock();
+            auto h = weakHolder.lock();
+            if (!thisPtr || !h)
+                return;
+            auto ctx = h->context;
+            if (!ctx)
+                return;
+
+            if (connPtr->connected())
+            {
+                // Store holder in connection to keep it alive
+                connPtr->setContext(h);
+
+                // Send the request
+                trantor::MsgBuffer buffer;
+                auto implPtr = static_cast<HttpRequestImpl *>(req.get());
+                implPtr->appendToBuffer(&buffer);
+                LOG_TRACE << "SSE Send request:"
+                          << std::string(buffer.peek(), buffer.readableBytes());
+                thisPtr->bytesSent_ += buffer.readableBytes();
+                connPtr->send(std::move(buffer));
+            }
+            else
+            {
+                // Connection closed
+                LOG_TRACE << "SSE connection closed";
+                if (ctx->status() != SseClientContext::Status::Closed &&
+                    !ctx->isTimedOut())
+                {
+                    ctx->onClose(ReqResult::Ok);
+                }
+            }
+        });
+
+    holder->client->setConnectionErrorCallback([weakHolder]() {
+        auto h = weakHolder.lock();
+        if (!h)
+            return;
+        auto ctx = h->context;
+        if (ctx && ctx->status() != SseClientContext::Status::Closed)
+        {
+            ctx->onClose(ReqResult::BadServerAddress);
+        }
+    });
+
+    holder->client->setMessageCallback(
+        [weakPtr, weakHolder](const trantor::TcpConnectionPtr &connPtr,
+                              trantor::MsgBuffer *msg) {
+            auto thisPtr = weakPtr.lock();
+            auto h = weakHolder.lock();
+            if (!thisPtr || !h)
+                return;
+            auto ctx = h->context;
+            if (!ctx)
+                return;
+
+            thisPtr->bytesReceived_ += msg->readableBytes();
+
+            if (!ctx->parse(msg))
+            {
+                ctx->onClose(ReqResult::BadResponse);
+                if (h->client)
+                {
+                    h->client->disconnect();
+                }
+                return;
+            }
+
+            // Check if closed
+            if (ctx->status() == SseClientContext::Status::Closed)
+            {
+                ctx->onClose(ReqResult::Ok);
+                if (h->client)
+                {
+                    h->client->disconnect();
+                }
+            }
+        });
+
+    holder->client->setSSLErrorCallback([weakHolder](trantor::SSLError err) {
+        auto h = weakHolder.lock();
+        if (!h)
+            return;
+        auto ctx = h->context;
+        if (!ctx)
+            return;
+        if (err == trantor::SSLError::kSSLHandshakeError)
+            ctx->onClose(ReqResult::HandshakeError);
+        else if (err == trantor::SSLError::kSSLInvalidCertificate)
+            ctx->onClose(ReqResult::InvalidCertificate);
+        else if (err == trantor::SSLError::kSSLProtocolError)
+            ctx->onClose(ReqResult::EncryptionFailure);
+    });
+
+    // Handle DNS resolution if needed
+    if (isDomainName_ && !domain_.empty())
+    {
+        if (!resolverPtr_)
+        {
+            resolverPtr_ = trantor::Resolver::newResolver(loop_, 600);
+        }
+
+        resolverPtr_->resolve(
+            domain_, [thisPtr, holder](const trantor::InetAddress &addr) {
+                thisPtr->loop_->runInLoop([thisPtr, holder, addr]() {
+                    if (holder->context->status() ==
+                        SseClientContext::Status::Closed)
+                    {
+                        return;
+                    }
+
+                    if (!addr.isUnspecified() && addr.portNetEndian() != 0)
+                    {
+                        holder->client->connect();
+                    }
+                    else
+                    {
+                        holder->context->onClose(ReqResult::BadServerAddress);
+                    }
+                });
+            });
+    }
+    else
+    {
+        // Direct IP, connect immediately
+        holder->client->connect();
+    }
+}
+

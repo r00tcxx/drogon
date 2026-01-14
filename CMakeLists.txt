@@ -1,5 +1,17 @@
 cmake_minimum_required(VERSION 3.5...3.31)
 
+# vcpkg integration - auto detect vcpkg toolchain
+if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        CACHE STRING "Vcpkg toolchain file")
+    message(STATUS "Using vcpkg toolchain: ${CMAKE_TOOLCHAIN_FILE}")
+endif()
+
+# Allow user to specify vcpkg triplet
+if(DEFINED ENV{VCPKG_DEFAULT_TRIPLET} AND NOT DEFINED VCPKG_TARGET_TRIPLET)
+    set(VCPKG_TARGET_TRIPLET "$ENV{VCPKG_DEFAULT_TRIPLET}" CACHE STRING "")
+endif()
+
 project(drogon)
 
 message(STATUS "compiler: " ${CMAKE_CXX_COMPILER_ID})
@@ -286,6 +298,8 @@ set(DROGON_SOURCES
     lib/src/LocalHostFilter.cc
     lib/src/MultiPart.cc
     lib/src/MultipartStreamParser.cc
+    lib/src/SseClientContext.cc
+    lib/src/SseEventParser.cc
     lib/src/NotFound.cc
     lib/src/PluginsManager.cc
     lib/src/PromExporter.cc
@@ -588,6 +602,7 @@ set(DROGON_HEADERS
     lib/inc/drogon/MultiPart.h
     lib/inc/drogon/NotFound.h
     lib/inc/drogon/Session.h
+    lib/inc/drogon/SseEvent.h
     lib/inc/drogon/UploadFile.h
     lib/inc/drogon/WebSocketClient.h
     lib/inc/drogon/WebSocketConnection.h

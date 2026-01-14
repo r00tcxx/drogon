@@ -19,6 +19,7 @@
 #include <drogon/drogon_callbacks.h>
 #include <drogon/HttpResponse.h>
 #include <drogon/HttpRequest.h>
+#include <drogon/SseEvent.h>
 #include <trantor/utils/NonCopyable.h>
 #include <trantor/net/EventLoop.h>
 #include <cstddef>
@@ -50,6 +51,28 @@ struct HttpRespAwaiter : public CallbackAwaiter<HttpResponsePtr>
   private:
     HttpClient *client_;
     HttpRequestPtr req_;
+    double timeout_;
+};
+
+struct SseConnectionAwaiter : public CallbackAwaiter<HttpResponsePtr>
+{
+    SseConnectionAwaiter(HttpClient *client,
+                         HttpRequestPtr req,
+                         SseEventCallback eventCb,
+                         double timeout)
+        : client_(client),
+          req_(std::move(req)),
+          eventCb_(std::move(eventCb)),
+          timeout_(timeout)
+    {
+    }
+
+    void await_suspend(std::coroutine_handle<> handle);
+
+  private:
+    HttpClient *client_;
+    HttpRequestPtr req_;
+    SseEventCallback eventCb_;
     double timeout_;
 };
 
@@ -161,6 +184,97 @@ class DROGON_EXPORT HttpClient : public trantor::NonCopyable
                                               double timeout = 0)
     {
         return internal::HttpRespAwaiter(this, std::move(req), timeout);
+    }
+#endif
+
+    /**
+     * @brief Send a request for Server-Sent Events (SSE) stream
+     *
+     * @param req The request sent to the server. The Accept header will be
+     * automatically set to "text/event-stream" if not already set.
+     * @param eventCallback The callback is called for each SSE event received.
+     * @param closedCallback The callback is called when the SSE connection is
+     * closed or an error occurs.
+     * @param headersCallback Optional callback called when response headers are
+     * received, allowing early inspection of the response status.
+     * @param timeout In seconds. If no event is received within the timeout,
+     * the connection is closed with ReqResult::Timeout. The zero value by
+     * default disables the timeout. Note: The timeout is reset after each
+     * event is received.
+     *
+     * @note The SSE connection will remain open until the server closes it,
+     * an error occurs, or the timeout expires. The closedCallback is always
+     * called when the connection ends.
+     *
+     * @code
+       auto client = HttpClient::newHttpClient("http://localhost:8080");
+       auto req = HttpRequest::newHttpRequest();
+       req->setPath("/sse");
+       client->sendRequestForSse(
+           req,
+           [](const SseEvent &event) {
+               std::cout << "Event: " << event.event << std::endl;
+               std::cout << "Data: " << event.data << std::endl;
+           },
+           [](ReqResult result, const HttpResponsePtr &resp) {
+               std::cout << "SSE connection closed: " << result << std::endl;
+           });
+       @endcode
+     */
+    virtual void sendRequestForSse(
+        const HttpRequestPtr &req,
+        const SseEventCallback &eventCallback,
+        const SseClosedCallback &closedCallback,
+        const SseHeadersCallback &headersCallback = nullptr,
+        double timeout = 0) = 0;
+
+    /**
+     * @brief Send a request for Server-Sent Events (SSE) stream
+     *
+     * @param req The request sent to the server.
+     * @param eventCallback The callback is called for each SSE event received.
+     * @param closedCallback The callback is called when the SSE connection is
+     * closed or an error occurs.
+     * @param headersCallback Optional callback called when response headers are
+     * received.
+     * @param timeout In seconds. Timeout for the SSE connection.
+     */
+    virtual void sendRequestForSse(const HttpRequestPtr &req,
+                                   SseEventCallback &&eventCallback,
+                                   SseClosedCallback &&closedCallback,
+                                   SseHeadersCallback &&headersCallback,
+                                   double timeout = 0) = 0;
+
+#ifdef __cpp_impl_coroutine
+    /**
+     * @brief Send a request for SSE via coroutines
+     *
+     * @param req The request sent to the server.
+     * @param eventCallback The callback is called for each SSE event received.
+     * @param timeout In seconds. If no event is received within the timeout,
+     * a drogon::HttpException with ReqResult::Timeout is thrown.
+     *
+     * @return internal::SseConnectionAwaiter. Await on it to wait for the
+     * connection to close. Returns the final HttpResponsePtr with headers.
+     *
+     * @note The coroutine will suspend until the SSE connection is closed.
+     * Events are delivered via the eventCallback during the connection.
+     *
+     * @code
+       auto resp = co_await client->sendRequestForSseCoro(
+           req,
+           [](const SseEvent &event) {
+               std::cout << "Data: " << event.data << std::endl;
+           });
+       @endcode
+     */
+    internal::SseConnectionAwaiter sendRequestForSseCoro(
+        HttpRequestPtr req,
+        SseEventCallback eventCallback,
+        double timeout = 0)
+    {
+        return internal::SseConnectionAwaiter(
+            this, std::move(req), std::move(eventCallback), timeout);
     }
 #endif
 
@@ -395,6 +509,25 @@ inline void internal::HttpRespAwaiter::await_suspend(
                 setException(std::make_exception_ptr(HttpException(result)));
             handle.resume();
         },
+        timeout_);
+}
+
+inline void internal::SseConnectionAwaiter::await_suspend(
+    std::coroutine_handle<> handle)
+{
+    assert(client_ != nullptr);
+    assert(req_ != nullptr);
+    client_->sendRequestForSse(
+        req_,
+        std::move(eventCb_),
+        [handle, this](ReqResult result, const HttpResponsePtr &resp) {
+            if (result == ReqResult::Ok)
+                setValue(resp);
+            else
+                setException(std::make_exception_ptr(HttpException(result)));
+            handle.resume();
+        },
+        nullptr,
         timeout_);
 }
 #endif

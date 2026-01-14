@@ -50,6 +50,17 @@ class HttpClientImpl final : public HttpClient,
                      HttpReqCallback &&callback,
                      double timeout = 0) override;
 
+    void sendRequestForSse(const HttpRequestPtr &req,
+                           const SseEventCallback &eventCallback,
+                           const SseClosedCallback &closedCallback,
+                           const SseHeadersCallback &headersCallback = nullptr,
+                           double timeout = 0) override;
+    void sendRequestForSse(const HttpRequestPtr &req,
+                           SseEventCallback &&eventCallback,
+                           SseClosedCallback &&closedCallback,
+                           SseHeadersCallback &&headersCallback,
+                           double timeout = 0) override;
+
     trantor::EventLoop *getLoop() override
     {
         return loop_;
@@ -146,6 +157,11 @@ class HttpClientImpl final : public HttpClient,
     void sendRequestInLoop(const HttpRequestPtr &req,
                            HttpReqCallback &&callback,
                            double timeout);
+    void sendRequestForSseInLoop(const HttpRequestPtr &req,
+                                 SseEventCallback &&eventCallback,
+                                 SseClosedCallback &&closedCallback,
+                                 SseHeadersCallback &&headersCallback,
+                                 double timeout);
     void handleCookies(const HttpResponseImplPtr &resp);
     void handleResponse(const HttpResponseImplPtr &resp,
                         std::pair<HttpRequestPtr, HttpReqCallback> &&reqAndCb,
