@@ -1,17 +1,5 @@
 cmake_minimum_required(VERSION 3.5...3.31)
 
-# vcpkg integration - auto detect vcpkg toolchain
-if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-        CACHE STRING "Vcpkg toolchain file")
-    message(STATUS "Using vcpkg toolchain: ${CMAKE_TOOLCHAIN_FILE}")
-endif()
-
-# Allow user to specify vcpkg triplet
-if(DEFINED ENV{VCPKG_DEFAULT_TRIPLET} AND NOT DEFINED VCPKG_TARGET_TRIPLET)
-    set(VCPKG_TARGET_TRIPLET "$ENV{VCPKG_DEFAULT_TRIPLET}" CACHE STRING "")
-endif()
-
 project(drogon)
 
 message(STATUS "compiler: " ${CMAKE_CXX_COMPILER_ID})
@@ -423,10 +411,6 @@ if (BUILD_MYSQL)
         set(MYSQL_LIB_NAME MySQL_lib)
     elseif (unofficial-libmariadb_FOUND)
         target_link_libraries(${PROJECT_NAME} PRIVATE unofficial::libmariadb)
-        # MariaDB on Windows requires bcrypt for crypto functions
-        if (WIN32)
-            target_link_libraries(${PROJECT_NAME} PRIVATE bcrypt)
-        endif ()
         set(DROGON_FOUND_MYSQL TRUE)
         set(MYSQL_LIB_NAME unofficial::libmariadb)
     endif ()
