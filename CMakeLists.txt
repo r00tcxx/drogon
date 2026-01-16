@@ -364,11 +364,10 @@ endif()
 
 if (BUILD_POSTGRESQL)
     # find postgres
-    find_package(pg)
-    if (pg_FOUND)
-        message(STATUS "libpq inc path:" ${PG_INCLUDE_DIRS})
-        message(STATUS "libpq lib:" ${PG_LIBRARIES})
-        target_link_libraries(${PROJECT_NAME} PRIVATE pg_lib)
+    find_package(PostgreSQL REQUIRED)
+    if(PostgreSQL_FOUND)
+        set(pg_FOUND true)
+        target_link_libraries(${PROJECT_NAME} PRIVATE PostgreSQL::PostgreSQL)
         set(DROGON_SOURCES
             ${DROGON_SOURCES}
             orm_lib/src/postgresql_impl/PostgreSQLResultImpl.cc
@@ -398,7 +397,7 @@ if (BUILD_POSTGRESQL)
                 ${private_headers}
                 orm_lib/src/postgresql_impl/PgConnection.h)
         endif (libpq_supports_batch)
-    endif (pg_FOUND)
+    endif (PostgreSQL_FOUND)
 endif (BUILD_POSTGRESQL)
 
 if (BUILD_MYSQL)
@@ -423,7 +422,9 @@ if (BUILD_MYSQL)
             message(STATUS "Mariadb support mysql_optionsv")
             add_definitions(-DHAS_MYSQL_OPTIONSV)
         endif(HAS_MYSQL_OPTIONSV)
-
+        if (NOT BUILD_SHARED_LIBS AND WIN32)
+            target_link_libraries(${PROJECT_NAME} PUBLIC bcrypt)
+        endif()
         set(DROGON_SOURCES
             ${DROGON_SOURCES}
             orm_lib/src/mysql_impl/MysqlConnection.cc
@@ -465,10 +466,10 @@ if (BUILD_SQLITE)
 endif (BUILD_SQLITE)
 
 if (BUILD_REDIS)
-    find_package(Hiredis)
+    find_package(Hiredis NAMES hiredis CONFIG REQUIRED)
     if (Hiredis_FOUND)
         add_definitions(-DUSE_REDIS)
-        target_link_libraries(${PROJECT_NAME} PRIVATE Hiredis_lib)
+        target_link_libraries(${PROJECT_NAME} PRIVATE hiredis::hiredis)
         set(DROGON_SOURCES
             ${DROGON_SOURCES}
             nosql_lib/redis/src/RedisClientImpl.cc
