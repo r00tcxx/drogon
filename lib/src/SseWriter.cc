@@ -25,9 +25,9 @@ SseWriter::~SseWriter()
     close();
 }
 
-bool SseWriter::send(const SseEvent &event)
+bool SseWriter::send(const SseEventPtr &event)
 {
-    if (!stream_ || closed_)
+    if (!stream_ || closed_ || !event)
     {
         return false;
     }
@@ -41,9 +41,7 @@ bool SseWriter::sendJson(const Json::Value &json, const std::string &eventType)
     Json::StreamWriterBuilder builder;
     builder["indentation"] = "";  // Compact JSON
     std::string data = Json::writeString(builder, json);
-    SseEvent event;
-    event.event = eventType;
-    event.data = std::move(data);
+    auto event = SseEvent::newEvent(eventType, std::move(data));
     return send(event);
 }
 
@@ -87,32 +85,32 @@ void SseWriter::close()
     }
 }
 
-std::string SseWriter::formatEvent(const SseEvent &event) const
+std::string SseWriter::formatEvent(const SseEventPtr &event) const
 {
     std::ostringstream oss;
 
     // Event type (if not empty)
-    if (!event.event.empty())
+    if (!event->event().empty())
     {
-        oss << "event:" << event.event << "\n";
+        oss << "event:" << event->event() << "\n";
     }
 
     // Event ID
-    if (!event.id.empty())
+    if (!event->id().empty())
     {
-        oss << "id:" << event.id << "\n";
+        oss << "id:" << event->id() << "\n";
     }
 
     // Retry interval
-    if (event.retry > 0)
+    if (event->retry() > 0)
     {
-        oss << "retry:" << event.retry << "\n";
+        oss << "retry:" << event->retry() << "\n";
     }
 
     // Data lines (split by newlines)
-    if (!event.data.empty())
+    if (!event->data().empty())
     {
-        std::istringstream dataStream(event.data);
+        std::istringstream dataStream(event->data());
         std::string line;
         while (std::getline(dataStream, line))
         {

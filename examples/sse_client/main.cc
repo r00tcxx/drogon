@@ -28,17 +28,17 @@ int main()
     client->sendRequestForSse(
         req,
         // Event callback - called for each SSE event received
-        [](const SseEvent &event) {
+        [](const SseEventPtr &event) {
             std::cout << "=== SSE Event ===" << std::endl;
-            std::cout << "Event Type: " << event.event << std::endl;
-            std::cout << "Data: " << event.data << std::endl;
-            if (!event.id.empty())
+            std::cout << "Event Type: " << event->event() << std::endl;
+            std::cout << "Data: " << event->data() << std::endl;
+            if (!event->id().empty())
             {
-                std::cout << "ID: " << event.id << std::endl;
+                std::cout << "ID: " << event->id() << std::endl;
             }
-            if (event.retry > 0)
+            if (event->retry() > 0)
             {
-                std::cout << "Retry: " << event.retry << "ms" << std::endl;
+                std::cout << "Retry: " << event->retry() << "ms" << std::endl;
             }
             std::cout << "=================" << std::endl;
         },

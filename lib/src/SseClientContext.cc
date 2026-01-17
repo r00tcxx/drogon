@@ -107,7 +107,7 @@ bool SseClientContext::parseHeaders(trantor::MsgBuffer *buf)
 
             // Initialize SSE parser
             eventParser_ = std::make_unique<SseEventParser>(
-                [this](SseEvent event) {
+                [this](const SseEventPtr &event) {
                     if (eventCallback_ && !timedOut_)
                     {
                         eventCallback_(event);

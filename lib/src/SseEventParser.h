@@ -34,7 +34,7 @@ namespace drogon
 class SseEventParser : public trantor::NonCopyable
 {
   public:
-    using EventCallback = std::function<void(SseEvent)>;
+    using EventCallback = std::function<void(const SseEventPtr &)>;
 
     explicit SseEventParser(EventCallback callback)
         : eventCallback_(std::move(callback))
@@ -54,7 +54,7 @@ class SseEventParser : public trantor::NonCopyable
      */
     void reset()
     {
-        currentEvent_.reset();
+        currentEvent_ = SseEvent::newEvent();
         lineBuffer_.clear();
     }
 
@@ -78,7 +78,7 @@ class SseEventParser : public trantor::NonCopyable
     void dispatchEvent();
 
     EventCallback eventCallback_;
-    SseEvent currentEvent_;
+    SseEventPtr currentEvent_{SseEvent::newEvent()};
     std::string lineBuffer_;
     std::string lastEventId_;
 };

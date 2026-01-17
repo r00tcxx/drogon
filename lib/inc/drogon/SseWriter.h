@@ -73,7 +73,7 @@ class DROGON_EXPORT SseWriter
      * @return true if the event was sent successfully
      * @return false if the connection is closed or an error occurred
      */
-    bool send(const SseEvent &event);
+    bool send(const SseEventPtr &event);
 
     /**
      * @brief Send a simple data message with default event type "message"
@@ -84,8 +84,7 @@ class DROGON_EXPORT SseWriter
      */
     bool send(const std::string &data)
     {
-        SseEvent event;
-        event.data = data;
+        auto event = SseEvent::newEvent(data);
         return send(event);
     }
 
@@ -99,9 +98,7 @@ class DROGON_EXPORT SseWriter
      */
     bool send(const std::string &eventType, const std::string &data)
     {
-        SseEvent event;
-        event.event = eventType;
-        event.data = data;
+        auto event = SseEvent::newEvent(eventType, data);
         return send(event);
     }
 
@@ -163,7 +160,7 @@ class DROGON_EXPORT SseWriter
      * @param event The SSE event to send
      * @return An awaitable that resolves to true if sent successfully
      */
-    Task<bool> sendCoro(const SseEvent &event)
+    Task<bool> sendCoro(const SseEventPtr &event)
     {
         co_return send(event);
     }
@@ -196,7 +193,7 @@ class DROGON_EXPORT SseWriter
     /**
      * @brief Format an SSE event according to the specification
      */
-    std::string formatEvent(const SseEvent &event) const;
+    std::string formatEvent(const SseEventPtr &event) const;
 
     ResponseStreamPtr stream_;
     std::atomic<bool> closed_{false};

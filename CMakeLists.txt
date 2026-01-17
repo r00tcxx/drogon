@@ -287,6 +287,7 @@ set(DROGON_SOURCES
     lib/src/MultiPart.cc
     lib/src/MultipartStreamParser.cc
     lib/src/SseClientContext.cc
+    lib/src/SseEvent.cc
     lib/src/SseEventParser.cc
     lib/src/SseWriter.cc
     lib/src/NotFound.cc

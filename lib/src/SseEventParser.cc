@@ -98,23 +98,27 @@ void SseEventParser::processLine(const std::string &line)
     // Process the field
     if (field == "event")
     {
-        currentEvent_.event = value;
+        currentEvent_->setEvent(value);
     }
     else if (field == "data")
     {
         // Multiple data fields are concatenated with newlines
-        if (!currentEvent_.data.empty())
+        if (!currentEvent_->data().empty())
         {
-            currentEvent_.data += '\n';
+            std::string newData = currentEvent_->data() + '\n' + value;
+            currentEvent_->setData(std::move(newData));
         }
-        currentEvent_.data += value;
+        else
+        {
+            currentEvent_->setData(value);
+        }
     }
     else if (field == "id")
     {
         // ID must not contain null characters
         if (value.find('\0') == std::string::npos)
         {
-            currentEvent_.id = value;
+            currentEvent_->setId(value);
             lastEventId_ = value;
         }
     }
@@ -125,7 +129,7 @@ void SseEventParser::processLine(const std::string &line)
                          std::all_of(value.begin(), value.end(), ::isdigit);
         if (allDigits)
         {
-            currentEvent_.retry = std::atoi(value.c_str());
+            currentEvent_->setRetry(std::atoi(value.c_str()));
         }
     }
     // Ignore unknown fields
@@ -133,21 +137,21 @@ void SseEventParser::processLine(const std::string &line)
 
 void SseEventParser::dispatchEvent()
 {
-    if (currentEvent_.isValid())
+    if (currentEvent_->isValid())
     {
         // If no event type specified, use "message"
-        if (currentEvent_.event.empty())
+        if (currentEvent_->event().empty())
         {
-            currentEvent_.event = "message";
+            currentEvent_->setEvent("message");
         }
 
         if (eventCallback_)
         {
-            eventCallback_(std::move(currentEvent_));
+            eventCallback_(currentEvent_);
         }
     }
 
-    currentEvent_.reset();
+    currentEvent_ = SseEvent::newEvent();
 }
 
 }  // namespace drogon

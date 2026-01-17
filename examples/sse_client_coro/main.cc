@@ -27,8 +27,8 @@ Task<> handleSse()
         // Events are delivered via the callback during the connection
         auto resp = co_await client->sendRequestForSseCoro(
             req,
-            [](const SseEvent &event) {
-                std::cout << "[" << event.event << "] " << event.data
+            [](const SseEventPtr &event) {
+                std::cout << "[" << event->event() << "] " << event->data()
                           << std::endl;
             },
             30.0  // Timeout

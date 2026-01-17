@@ -44,10 +44,10 @@ int main()
                         }
 
                         // Send a final event with custom type
-                        SseEvent finalEvent;
-                        finalEvent.event = "complete";
-                        finalEvent.data = "Stream finished";
-                        finalEvent.id = "final";
+                        auto finalEvent = SseEvent::newEvent();
+                        finalEvent->setEvent("complete");
+                        finalEvent->setData("Stream finished");
+                        finalEvent->setId("final");
                         writer->send(finalEvent);
 
                         // Close the connection
@@ -110,18 +110,18 @@ int main()
                         writer->sendComment("Connection established");
 
                         // Send event with all fields
-                        SseEvent event;
-                        event.event = "init";
-                        event.data = "Initialization complete";
-                        event.id = "1";
+                        auto event = SseEvent::newEvent();
+                        event->setEvent("init");
+                        event->setData("Initialization complete");
+                        event->setId("1");
                         writer->send(event);
 
                         std::this_thread::sleep_for(1s);
 
                         // Send multi-line data
-                        event.event = "multi-line";
-                        event.data = "Line 1\nLine 2\nLine 3";
-                        event.id = "2";
+                        event->setEvent("multi-line");
+                        event->setData("Line 1\nLine 2\nLine 3");
+                        event->setId("2");
                         writer->send(event);
 
                         std::this_thread::sleep_for(1s);

@@ -21,10 +21,10 @@ Task<> sendSseEvents(SseWriterPtr writer)
     for (int i = 0; i < 10 && writer->isOpen(); ++i)
     {
         // Create event
-        SseEvent event;
-        event.event = "update";
-        event.data = "Count: " + std::to_string(i);
-        event.id = std::to_string(i);
+        auto event = SseEvent::newEvent();
+        event->setEvent("update");
+        event->setData("Count: " + std::to_string(i));
+        event->setId(std::to_string(i));
 
         // Send using coroutine
         bool sent = co_await writer->sendCoro(event);
@@ -39,9 +39,9 @@ Task<> sendSseEvents(SseWriterPtr writer)
     }
 
     // Send completion event
-    SseEvent finalEvent;
-    finalEvent.event = "complete";
-    finalEvent.data = "Stream finished successfully";
+    auto finalEvent = SseEvent::newEvent();
+    finalEvent->setEvent("complete");
+    finalEvent->setData("Stream finished successfully");
     co_await writer->sendCoro(finalEvent);
 
     writer->close();

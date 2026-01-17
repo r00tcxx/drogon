@@ -22,6 +22,10 @@ namespace drogon
 {
 class HttpResponse;
 using HttpResponsePtr = std::shared_ptr<HttpResponse>;
+
+class SseEvent;
+using SseEventPtr = std::shared_ptr<SseEvent>;
+
 /**
  * @brief Represents a Server-Sent Event (SSE) message
  *
@@ -32,38 +36,114 @@ using HttpResponsePtr = std::shared_ptr<HttpResponse>;
  *   data: eventData
  *
  */
-struct DROGON_EXPORT SseEvent
+class DROGON_EXPORT SseEvent
 {
+  public:
+    /**
+     * @brief Create a new SSE event
+     * @return A shared pointer to the new event
+     */
+    static SseEventPtr newEvent();
+
+    /**
+     * @brief Create a new SSE event with data
+     * @param data The event data
+     * @return A shared pointer to the new event
+     */
+    static SseEventPtr newEvent(const std::string &data);
+
+    /**
+     * @brief Create a new SSE event with event type and data
+     * @param eventType The event type
+     * @param data The event data
+     * @return A shared pointer to the new event
+     */
+    static SseEventPtr newEvent(const std::string &eventType,
+                                const std::string &data);
+
     /// The event type. Empty string means "message" event.
-    std::string event;
+    const std::string &event() const
+    {
+        return event_;
+    }
+
+    void setEvent(const std::string &event)
+    {
+        event_ = event;
+    }
+
+    void setEvent(std::string &&event)
+    {
+        event_ = std::move(event);
+    }
 
     /// The event data. Multiple data lines are concatenated with newlines.
-    std::string data;
+    const std::string &data() const
+    {
+        return data_;
+    }
+
+    void setData(const std::string &data)
+    {
+        data_ = data;
+    }
+
+    void setData(std::string &&data)
+    {
+        data_ = std::move(data);
+    }
 
     /// The event ID. Used for reconnection.
-    std::string id;
+    const std::string &id() const
+    {
+        return id_;
+    }
+
+    void setId(const std::string &id)
+    {
+        id_ = id;
+    }
+
+    void setId(std::string &&id)
+    {
+        id_ = std::move(id);
+    }
 
     /// Retry time in milliseconds. 0 means not specified.
-    int retry{0};
+    int retry() const
+    {
+        return retry_;
+    }
+
+    void setRetry(int retry)
+    {
+        retry_ = retry;
+    }
 
     /// Check if the event is valid (has data)
     bool isValid() const
     {
-        return !data.empty();
+        return !data_.empty();
     }
 
     /// Reset the event to empty state
     void reset()
     {
-        event.clear();
-        data.clear();
-        id.clear();
-        retry = 0;
+        event_.clear();
+        data_.clear();
+        id_.clear();
+        retry_ = 0;
     }
+
+  private:
+    std::string event_;
+    std::string data_;
+    std::string id_;
+    int retry_{0};
 };
 
 /// Callback for receiving SSE events
-using SseEventCallback = std::function<void(const SseEvent &)>;
+using SseEventCallback = std::function<void(const SseEventPtr &)>;
 
 /// Callback for SSE connection closed or error
 using SseClosedCallback = std::function<void(ReqResult, const HttpResponsePtr &)>;
