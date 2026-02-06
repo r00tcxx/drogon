@@ -53,6 +53,28 @@ struct HttpRespAwaiter : public CallbackAwaiter<HttpResponsePtr>
     double timeout_;
 };
 
+struct HttpStreamRespAwaiter : public CallbackAwaiter<HttpResponsePtr>
+{
+    HttpStreamRespAwaiter(HttpClient *client,
+                          HttpRequestPtr req,
+                          HttpReqDataCallback dataCb,
+                          double timeout)
+        : client_(client),
+          req_(std::move(req)),
+          dataCb_(std::move(dataCb)),
+          timeout_(timeout)
+    {
+    }
+
+    void await_suspend(std::coroutine_handle<> handle);
+
+  private:
+    HttpClient *client_;
+    HttpRequestPtr req_;
+    HttpReqDataCallback dataCb_;
+    double timeout_;
+};
+
 }  // namespace internal
 #endif
 
@@ -113,6 +135,29 @@ class DROGON_EXPORT HttpClient : public trantor::NonCopyable
                              double timeout = 0) = 0;
 
     /**
+     * @brief Send a request asynchronously to the server with streaming body
+     * data support.
+     *
+     * @param req The request sent to the server.
+     * @param dataCallback Called for each chunk of response body data as it
+     * arrives. The pointer is only valid during the callback invocation.
+     * @param callback The callback is called when the response is fully
+     * received (headers + status, body already delivered via dataCallback).
+     * @param timeout In seconds. The zero value by default disables the
+     * timeout.
+     */
+    virtual void sendRequest(const HttpRequestPtr &req,
+                             const HttpReqDataCallback &dataCallback,
+                             const HttpReqCallback &callback,
+                             double timeout = 0) = 0;
+
+    /// @brief Send a request with streaming body via move callbacks.
+    virtual void sendRequest(const HttpRequestPtr &req,
+                             HttpReqDataCallback &&dataCallback,
+                             HttpReqCallback &&callback,
+                             double timeout = 0) = 0;
+
+    /**
      * @brief Send a request synchronously to the server and return the
      * response.
      *
@@ -161,6 +206,27 @@ class DROGON_EXPORT HttpClient : public trantor::NonCopyable
                                               double timeout = 0)
     {
         return internal::HttpRespAwaiter(this, std::move(req), timeout);
+    }
+
+    /**
+     * @brief Send a request via coroutines with streaming body data.
+     * The dataCallback is called for each chunk of body data as it arrives.
+     * co_await returns the HttpResponsePtr once all data has been received.
+     *
+     * @param req The request sent to the server.
+     * @param dataCallback Called for each chunk of response body data.
+     * @param timeout In seconds. 0 disables timeout.
+     * @return internal::HttpStreamRespAwaiter
+     */
+    internal::HttpStreamRespAwaiter sendRequestStreamCoro(
+        HttpRequestPtr req,
+        HttpReqDataCallback dataCallback,
+        double timeout = 0)
+    {
+        return internal::HttpStreamRespAwaiter(this,
+                                               std::move(req),
+                                               std::move(dataCallback),
+                                               timeout);
     }
 #endif
 
@@ -388,6 +454,24 @@ inline void internal::HttpRespAwaiter::await_suspend(
     assert(req_ != nullptr);
     client_->sendRequest(
         req_,
+        [handle, this](ReqResult result, const HttpResponsePtr &resp) {
+            if (result == ReqResult::Ok)
+                setValue(resp);
+            else
+                setException(std::make_exception_ptr(HttpException(result)));
+            handle.resume();
+        },
+        timeout_);
+}
+
+inline void internal::HttpStreamRespAwaiter::await_suspend(
+    std::coroutine_handle<> handle)
+{
+    assert(client_ != nullptr);
+    assert(req_ != nullptr);
+    client_->sendRequest(
+        req_,
+        std::move(dataCb_),
         [handle, this](ReqResult result, const HttpResponsePtr &resp) {
             if (result == ReqResult::Ok)
                 setValue(resp);

@@ -28,6 +28,7 @@ void HttpResponseParser::reset()
     parseResponseForHeadMethod_ = false;
     leftBodyLength_ = 0;
     currentChunkLength_ = 0;
+    dataCallback_ = nullptr;
 }
 
 HttpResponseParser::HttpResponseParser(const trantor::TcpConnectionPtr &connPtr)
@@ -198,24 +199,43 @@ bool HttpResponseParser::parseResponse(MsgBuffer *buf)
                 }
                 break;
             }
-            if (!responsePtr_->bodyPtr_)
+            if (dataCallback_)
             {
-                responsePtr_->bodyPtr_ =
-                    std::make_shared<HttpMessageStringBody>();
-            }
-            if (leftBodyLength_ >= buf->readableBytes())
-            {
-                leftBodyLength_ -= buf->readableBytes();
-
-                responsePtr_->bodyPtr_->append(buf->peek(),
-                                               buf->readableBytes());
-                buf->retrieveAll();
+                if (leftBodyLength_ >= buf->readableBytes())
+                {
+                    dataCallback_(buf->peek(), buf->readableBytes());
+                    leftBodyLength_ -= buf->readableBytes();
+                    buf->retrieveAll();
+                }
+                else
+                {
+                    dataCallback_(buf->peek(), leftBodyLength_);
+                    buf->retrieve(leftBodyLength_);
+                    leftBodyLength_ = 0;
+                }
             }
             else
             {
-                responsePtr_->bodyPtr_->append(buf->peek(), leftBodyLength_);
-                buf->retrieve(leftBodyLength_);
-                leftBodyLength_ = 0;
+                if (!responsePtr_->bodyPtr_)
+                {
+                    responsePtr_->bodyPtr_ =
+                        std::make_shared<HttpMessageStringBody>();
+                }
+                if (leftBodyLength_ >= buf->readableBytes())
+                {
+                    leftBodyLength_ -= buf->readableBytes();
+
+                    responsePtr_->bodyPtr_->append(buf->peek(),
+                                                   buf->readableBytes());
+                    buf->retrieveAll();
+                }
+                else
+                {
+                    responsePtr_->bodyPtr_->append(buf->peek(),
+                                                   leftBodyLength_);
+                    buf->retrieve(leftBodyLength_);
+                    leftBodyLength_ = 0;
+                }
             }
             if (leftBodyLength_ == 0)
             {
@@ -228,12 +248,20 @@ bool HttpResponseParser::parseResponse(MsgBuffer *buf)
         }
         else if (status_ == HttpResponseParseStatus::kExpectClose)
         {
-            if (!responsePtr_->bodyPtr_)
+            if (dataCallback_)
             {
-                responsePtr_->bodyPtr_ =
-                    std::make_shared<HttpMessageStringBody>();
+                dataCallback_(buf->peek(), buf->readableBytes());
             }
-            responsePtr_->bodyPtr_->append(buf->peek(), buf->readableBytes());
+            else
+            {
+                if (!responsePtr_->bodyPtr_)
+                {
+                    responsePtr_->bodyPtr_ =
+                        std::make_shared<HttpMessageStringBody>();
+                }
+                responsePtr_->bodyPtr_->append(buf->peek(),
+                                               buf->readableBytes());
+            }
             buf->retrieveAll();
             break;
         }
@@ -272,13 +300,20 @@ bool HttpResponseParser::parseResponse(MsgBuffer *buf)
                 if (*(buf->peek() + currentChunkLength_) == '\r' &&
                     *(buf->peek() + currentChunkLength_ + 1) == '\n')
                 {
-                    if (!responsePtr_->bodyPtr_)
+                    if (dataCallback_)
                     {
-                        responsePtr_->bodyPtr_ =
-                            std::make_shared<HttpMessageStringBody>();
+                        dataCallback_(buf->peek(), currentChunkLength_);
                     }
-                    responsePtr_->bodyPtr_->append(buf->peek(),
-                                                   currentChunkLength_);
+                    else
+                    {
+                        if (!responsePtr_->bodyPtr_)
+                        {
+                            responsePtr_->bodyPtr_ =
+                                std::make_shared<HttpMessageStringBody>();
+                        }
+                        responsePtr_->bodyPtr_->append(buf->peek(),
+                                                       currentChunkLength_);
+                    }
                     buf->retrieve(currentChunkLength_ + 2);
                     currentChunkLength_ = 0;
                     status_ = HttpResponseParseStatus::kExpectChunkLen;

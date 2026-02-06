@@ -30,6 +30,29 @@
 
 namespace drogon
 {
+
+struct RequestContext
+{
+    HttpRequestPtr request;
+    HttpReqCallback callback;
+    HttpReqDataCallback dataCallback;
+
+    RequestContext() = default;
+    RequestContext(HttpRequestPtr req, HttpReqCallback cb)
+        : request(std::move(req)), callback(std::move(cb))
+    {
+    }
+
+    RequestContext(HttpRequestPtr req,
+                   HttpReqDataCallback dataCb,
+                   HttpReqCallback cb)
+        : request(std::move(req)),
+          callback(std::move(cb)),
+          dataCallback(std::move(dataCb))
+    {
+    }
+};
+
 class HttpClientImpl final : public HttpClient,
                              public std::enable_shared_from_this<HttpClientImpl>
 {
@@ -47,6 +70,14 @@ class HttpClientImpl final : public HttpClient,
                      const HttpReqCallback &callback,
                      double timeout = 0) override;
     void sendRequest(const HttpRequestPtr &req,
+                     HttpReqCallback &&callback,
+                     double timeout = 0) override;
+    void sendRequest(const HttpRequestPtr &req,
+                     const HttpReqDataCallback &dataCallback,
+                     const HttpReqCallback &callback,
+                     double timeout = 0) override;
+    void sendRequest(const HttpRequestPtr &req,
+                     HttpReqDataCallback &&dataCallback,
                      HttpReqCallback &&callback,
                      double timeout = 0) override;
 
@@ -146,13 +177,20 @@ class HttpClientImpl final : public HttpClient,
     void sendRequestInLoop(const HttpRequestPtr &req,
                            HttpReqCallback &&callback,
                            double timeout);
+    void sendRequestInLoop(const HttpRequestPtr &req,
+                           HttpReqDataCallback &&dataCallback,
+                           HttpReqCallback &&callback);
+    void sendRequestInLoop(const HttpRequestPtr &req,
+                           HttpReqDataCallback &&dataCallback,
+                           HttpReqCallback &&callback,
+                           double timeout);
     void handleCookies(const HttpResponseImplPtr &resp);
     void handleResponse(const HttpResponseImplPtr &resp,
-                        std::pair<HttpRequestPtr, HttpReqCallback> &&reqAndCb,
+                        RequestContext &&reqCtx,
                         const trantor::TcpConnectionPtr &connPtr);
     void createTcpClient();
-    std::queue<std::pair<HttpRequestPtr, HttpReqCallback>> pipeliningCallbacks_;
-    std::list<std::pair<HttpRequestPtr, HttpReqCallback>> requestsBuffer_;
+    std::queue<RequestContext> pipeliningCallbacks_;
+    std::list<RequestContext> requestsBuffer_;
     void onRecvMessage(const trantor::TcpConnectionPtr &, trantor::MsgBuffer *);
     void onError(ReqResult result);
     std::string domain_;

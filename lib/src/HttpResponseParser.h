@@ -15,6 +15,7 @@
 #pragma once
 
 #include "impl_forwards.h"
+#include <drogon/drogon_callbacks.h>
 #include <trantor/utils/NonCopyable.h>
 #include <trantor/net/TcpConnection.h>
 #include <trantor/utils/MsgBuffer.h>
@@ -56,6 +57,11 @@ class HttpResponseParser : public trantor::NonCopyable
         parseResponseForHeadMethod_ = true;
     }
 
+    void setDataCallback(HttpReqDataCallback cb)
+    {
+        dataCallback_ = std::move(cb);
+    }
+
     void reset();
 
     const HttpResponseImplPtr &responseImpl() const
@@ -72,6 +78,7 @@ class HttpResponseParser : public trantor::NonCopyable
     size_t leftBodyLength_{0};
     size_t currentChunkLength_{0};
     std::weak_ptr<trantor::TcpConnection> conn_;
+    HttpReqDataCallback dataCallback_;
 };
 
 }  // namespace drogon
