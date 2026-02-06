@@ -76,7 +76,7 @@ void HttpClientImpl::createTcpClient()
                        !thisPtr->requestsBuffer_.empty())
                 {
                     thisPtr->sendReq(connPtr,
-                                     thisPtr->requestsBuffer_.front().first);
+                                     thisPtr->requestsBuffer_.front().request);
                     thisPtr->pipeliningCallbacks_.push(
                         std::move(thisPtr->requestsBuffer_.front()));
                     thisPtr->requestsBuffer_.pop_front();
@@ -90,7 +90,7 @@ void HttpClientImpl::createTcpClient()
                     responseParser->gotAll())
                 {
                     auto &firstReq = thisPtr->pipeliningCallbacks_.front();
-                    if (firstReq.first->method() == Head)
+                    if (firstReq.request->method() == Head)
                     {
                         responseParser->setForHeadMethod();
                     }
@@ -287,6 +287,43 @@ void HttpClientImpl::sendRequest(const drogon::HttpRequestPtr &req,
         });
 }
 
+void HttpClientImpl::sendRequest(
+    const drogon::HttpRequestPtr &req,
+    const drogon::HttpReqDataCallback &dataCallback,
+    const drogon::HttpReqCallback &callback,
+    double timeout)
+{
+    auto thisPtr = shared_from_this();
+    loop_->runInLoop([thisPtr,
+                      req,
+                      dataCallback = dataCallback,
+                      callback = callback,
+                      timeout]() mutable {
+        thisPtr->sendRequestInLoop(req,
+                                   std::move(dataCallback),
+                                   std::move(callback),
+                                   timeout);
+    });
+}
+
+void HttpClientImpl::sendRequest(const drogon::HttpRequestPtr &req,
+                                 drogon::HttpReqDataCallback &&dataCallback,
+                                 drogon::HttpReqCallback &&callback,
+                                 double timeout)
+{
+    auto thisPtr = shared_from_this();
+    loop_->runInLoop([thisPtr,
+                      req,
+                      dataCallback = std::move(dataCallback),
+                      callback = std::move(callback),
+                      timeout]() mutable {
+        thisPtr->sendRequestInLoop(req,
+                                   std::move(dataCallback),
+                                   std::move(callback),
+                                   timeout);
+    });
+}
+
 struct RequestCallbackParams
 {
     RequestCallbackParams(HttpReqCallback &&cb,
@@ -338,7 +375,7 @@ void HttpClientImpl::sendRequestInLoop(const HttpRequestPtr &req,
                      iter != thisPtr->requestsBuffer_.end();
                      ++iter)
                 {
-                    if (iter->first == callbackParamsPtr->requestPtr)
+                    if (iter->request == callbackParamsPtr->requestPtr)
                     {
                         thisPtr->requestsBuffer_.erase(iter);
                         break;
@@ -349,6 +386,189 @@ void HttpClientImpl::sendRequestInLoop(const HttpRequestPtr &req,
             }
         });
     sendRequestInLoop(req,
+                      [callbackParamsPtr](ReqResult r,
+                                          const HttpResponsePtr &resp) {
+                          if (callbackParamsPtr->timeoutFlag)
+                          {
+                              return;
+                          }
+                          callbackParamsPtr->timeoutFlag = true;
+                          (callbackParamsPtr->callback)(r, resp);
+                      });
+}
+
+static bool isValidIpAddr(const trantor::InetAddress &addr);
+
+void HttpClientImpl::sendRequestInLoop(const HttpRequestPtr &req,
+                                       HttpReqDataCallback &&dataCallback,
+                                       HttpReqCallback &&callback)
+{
+    // Delegate to the non-streaming path, wrapping in a RequestContext
+    // that carries the dataCallback through the pipeline.
+    loop_->assertInLoopThread();
+
+    // Reuse the main sendRequestInLoop logic but with RequestContext
+    if (!static_cast<drogon::HttpRequestImpl *>(req.get())->passThrough())
+    {
+        req->addHeader("connection", "Keep-Alive");
+        if (!userAgent_.empty())
+            req->addHeader("user-agent", userAgent_);
+    }
+    if (req->getHeader("host").empty())
+    {
+        if (onDefaultPort())
+        {
+            req->addHeader("host", host());
+        }
+        else
+        {
+            req->addHeader("host", host() + ":" + std::to_string(port()));
+        }
+    }
+
+    for (auto &cookie : validCookies_)
+    {
+        if ((cookie.expiresDate().microSecondsSinceEpoch() == 0 ||
+             cookie.expiresDate() > trantor::Date::now()) &&
+            (cookie.path().empty() || req->path().find(cookie.path()) == 0))
+        {
+            req->addCookie(cookie.key(), cookie.value());
+        }
+    }
+
+    auto thisPtr = shared_from_this();
+    RequestContext ctx(req,
+                       std::move(dataCallback),
+                       [thisPtr, callback = std::move(callback)](
+                           ReqResult result, const HttpResponsePtr &response) {
+                           callback(result, response);
+                       });
+
+    if (!tcpClientPtr_)
+    {
+        requestsBuffer_.push_back(std::move(ctx));
+
+        if (domain_.empty() || !isDomainName_)
+        {
+            if (isValidIpAddr(serverAddr_))
+            {
+                createTcpClient();
+            }
+            else
+            {
+                auto cb = std::move(requestsBuffer_.back().callback);
+                requestsBuffer_.pop_back();
+                cb(ReqResult::BadServerAddress, nullptr);
+                assert(requestsBuffer_.empty());
+            }
+            return;
+        }
+
+        if (dns_)
+        {
+            return;
+        }
+
+        dns_ = true;
+        if (!resolverPtr_)
+        {
+            resolverPtr_ =
+                trantor::Resolver::newResolver(loop_, kDefaultDNSTimeout);
+        }
+        resolverPtr_->resolve(
+            domain_, [thisPtr](const trantor::InetAddress &addr) {
+                thisPtr->loop_->runInLoop([thisPtr, addr]() {
+                    auto port = thisPtr->serverAddr_.portNetEndian();
+                    thisPtr->serverAddr_ = addr;
+                    thisPtr->serverAddr_.setPortNetEndian(port);
+                    LOG_TRACE << "dns:domain=" << thisPtr->domain_
+                              << ";ip=" << thisPtr->serverAddr_.toIp();
+                    thisPtr->dns_ = false;
+
+                    if (isValidIpAddr(thisPtr->serverAddr_))
+                    {
+                        thisPtr->createTcpClient();
+                        return;
+                    }
+
+                    while (!(thisPtr->requestsBuffer_).empty())
+                    {
+                        auto &reqCtx = (thisPtr->requestsBuffer_).front();
+                        reqCtx.callback(ReqResult::BadServerAddress, nullptr);
+                        (thisPtr->requestsBuffer_).pop_front();
+                    }
+                });
+            });
+
+        return;
+    }
+
+    auto connPtr = tcpClientPtr_->connection();
+    if (!connPtr || connPtr->disconnected())
+    {
+        requestsBuffer_.push_back(std::move(ctx));
+        return;
+    }
+
+    if (pipeliningCallbacks_.size() <= pipeliningDepth_ &&
+        requestsBuffer_.empty())
+    {
+        sendReq(connPtr, req);
+        pipeliningCallbacks_.push(std::move(ctx));
+    }
+    else
+    {
+        requestsBuffer_.push_back(std::move(ctx));
+    }
+}
+
+void HttpClientImpl::sendRequestInLoop(const HttpRequestPtr &req,
+                                       HttpReqDataCallback &&dataCallback,
+                                       HttpReqCallback &&callback,
+                                       double timeout)
+{
+    if (timeout <= 0)
+    {
+        sendRequestInLoop(req, std::move(dataCallback), std::move(callback));
+        return;
+    }
+
+    auto callbackParamsPtr =
+        std::make_shared<RequestCallbackParams>(std::move(callback),
+                                                shared_from_this(),
+                                                req);
+
+    loop_->runAfter(
+        timeout,
+        [weakCallbackBackPtr =
+             std::weak_ptr<RequestCallbackParams>(callbackParamsPtr)] {
+            auto callbackParamsPtr = weakCallbackBackPtr.lock();
+            if (callbackParamsPtr != nullptr)
+            {
+                auto &thisPtr = callbackParamsPtr->clientPtr;
+                if (callbackParamsPtr->timeoutFlag)
+                {
+                    return;
+                }
+
+                callbackParamsPtr->timeoutFlag = true;
+
+                for (auto iter = thisPtr->requestsBuffer_.begin();
+                     iter != thisPtr->requestsBuffer_.end();
+                     ++iter)
+                {
+                    if (iter->request == callbackParamsPtr->requestPtr)
+                    {
+                        thisPtr->requestsBuffer_.erase(iter);
+                        break;
+                    }
+                }
+
+                (callbackParamsPtr->callback)(ReqResult::Timeout, nullptr);
+            }
+        });
+    sendRequestInLoop(req,
+                      std::move(dataCallback),
                       [callbackParamsPtr](ReqResult r,
                                           const HttpResponsePtr &resp) {
                           if (callbackParamsPtr->timeoutFlag)
@@ -420,11 +640,12 @@ void HttpClientImpl::sendRequestInLoop(const drogon::HttpRequestPtr &req,
         auto callbackPtr =
             std::make_shared<drogon::HttpReqCallback>(std::move(callback));
         requestsBuffer_.push_back(
-            {req,
-             [thisPtr = shared_from_this(),
-              callbackPtr](ReqResult result, const HttpResponsePtr &response) {
-                 (*callbackPtr)(result, response);
-             }});
+            RequestContext(req,
+                           [thisPtr = shared_from_this(),
+                            callbackPtr](ReqResult result,
+                                         const HttpResponsePtr &response) {
+                               (*callbackPtr)(result, response);
+                           }));
 
         if (domain_.empty() || !isDomainName_)
         {
@@ -474,12 +695,10 @@ void HttpClientImpl::sendRequestInLoop(const drogon::HttpRequestPtr &req,
                         return;
                     }
 
-                    // DNS fail to get valid ip address,
-                    // respond all requests with BadServerAddress
                     while (!(thisPtr->requestsBuffer_).empty())
                     {
-                        auto &reqAndCb = (thisPtr->requestsBuffer_).front();
-                        reqAndCb.second(ReqResult::BadServerAddress, nullptr);
+                        auto &reqCtx = (thisPtr->requestsBuffer_).front();
+                        reqCtx.callback(ReqResult::BadServerAddress, nullptr);
                         (thisPtr->requestsBuffer_).pop_front();
                     }
                 });
@@ -496,12 +715,12 @@ void HttpClientImpl::sendRequestInLoop(const drogon::HttpRequestPtr &req,
     if (!connPtr || connPtr->disconnected())
     {
         requestsBuffer_.push_back(
-            {req,
-             [thisPtr,
-              callback = std::move(callback)](ReqResult result,
-                                              const HttpResponsePtr &response) {
-                 callback(result, response);
-             }});
+            RequestContext(req,
+                           [thisPtr, callback = std::move(callback)](
+                               ReqResult result,
+                               const HttpResponsePtr &response) {
+                               callback(result, response);
+                           }));
         return;
     }
 
@@ -511,22 +730,22 @@ void HttpClientImpl::sendRequestInLoop(const drogon::HttpRequestPtr &req,
     {
         sendReq(connPtr, req);
         pipeliningCallbacks_.push(
-            {req,
-             [thisPtr,
-              callback = std::move(callback)](ReqResult result,
-                                              const HttpResponsePtr &response) {
-                 callback(result, response);
-             }});
+            RequestContext(req,
+                           [thisPtr, callback = std::move(callback)](
+                               ReqResult result,
+                               const HttpResponsePtr &response) {
+                               callback(result, response);
+                           }));
     }
     else
     {
         requestsBuffer_.push_back(
-            {req,
-             [thisPtr,
-              callback = std::move(callback)](ReqResult result,
-                                              const HttpResponsePtr &response) {
-                 callback(result, response);
-             }});
+            RequestContext(req,
+                           [thisPtr, callback = std::move(callback)](
+                               ReqResult result,
+                               const HttpResponsePtr &response) {
+                               callback(result, response);
+                           }));
     }
 }
 
@@ -543,10 +762,9 @@ void HttpClientImpl::sendReq(const trantor::TcpConnectionPtr &connPtr,
     connPtr->send(std::move(buffer));
 }
 
-void HttpClientImpl::handleResponse(
-    const HttpResponseImplPtr &resp,
-    std::pair<HttpRequestPtr, HttpReqCallback> &&reqAndCb,
-    const trantor::TcpConnectionPtr &connPtr)
+void HttpClientImpl::handleResponse(const HttpResponseImplPtr &resp,
+                                    RequestContext &&reqCtx,
+                                    const trantor::TcpConnectionPtr &connPtr)
 {
     assert(!pipeliningCallbacks_.empty());
     auto &coding = resp->getHeaderBy("content-encoding");
@@ -560,22 +778,22 @@ void HttpClientImpl::handleResponse(
         resp->brDecompress();
     }
 #endif
-    auto cb = std::move(reqAndCb);
+    auto ctx = std::move(reqCtx);
     pipeliningCallbacks_.pop();
     handleCookies(resp);
-    cb.second(ReqResult::Ok, resp);
+    ctx.callback(ReqResult::Ok, resp);
 
-    // LOG_TRACE << "pipelining buffer size=" <<
-    // pipeliningCallbacks_.size(); LOG_TRACE << "requests buffer size="
-    // << requestsBuffer_.size();
+    // LOG_TRACE << "pipelining buffer size="
+    // << pipeliningCallbacks_.size();
+    // LOG_TRACE << "requests buffer size=" << requestsBuffer_.size();
 
     if (connPtr->connected())
     {
         if (!requestsBuffer_.empty())
         {
-            auto &reqAndCallback = requestsBuffer_.front();
-            sendReq(connPtr, reqAndCallback.first);
-            pipeliningCallbacks_.push(std::move(reqAndCallback));
+            auto &reqCtx = requestsBuffer_.front();
+            sendReq(connPtr, reqCtx.request);
+            pipeliningCallbacks_.push(std::move(reqCtx));
             requestsBuffer_.pop_front();
         }
         else
@@ -590,9 +808,9 @@ void HttpClientImpl::handleResponse(
     {
         while (!pipeliningCallbacks_.empty())
         {
-            auto cb = std::move(pipeliningCallbacks_.front());
+            auto ctx = std::move(pipeliningCallbacks_.front());
             pipeliningCallbacks_.pop();
-            cb.second(ReqResult::NetworkFailure, nullptr);
+            ctx.callback(ReqResult::NetworkFailure, nullptr);
         }
     }
 }
@@ -613,9 +831,13 @@ void HttpClientImpl::onRecvMessage(const trantor::TcpConnectionPtr &connPtr,
             return;
         }
         auto &firstReq = pipeliningCallbacks_.front();
-        if (firstReq.first->method() == Head)
+        if (firstReq.request->method() == Head)
         {
             responseParser->setForHeadMethod();
+        }
+        if (firstReq.dataCallback)
+        {
+            responseParser->setDataCallback(firstReq.dataCallback);
         }
         if (!responseParser->parseResponse(msg))
         {
@@ -672,15 +894,15 @@ void HttpClientImpl::onError(ReqResult result)
 {
     while (!pipeliningCallbacks_.empty())
     {
-        auto cb = std::move(pipeliningCallbacks_.front());
+        auto ctx = std::move(pipeliningCallbacks_.front());
         pipeliningCallbacks_.pop();
-        cb.second(result, nullptr);
+        ctx.callback(result, nullptr);
     }
     while (!requestsBuffer_.empty())
     {
-        auto cb = std::move(requestsBuffer_.front().second);
+        auto ctx = std::move(requestsBuffer_.front());
         requestsBuffer_.pop_front();
-        cb(result, nullptr);
+        ctx.callback(result, nullptr);
     }
     tcpClientPtr_.reset();
 }

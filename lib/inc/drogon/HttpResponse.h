@@ -27,6 +27,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <cstdio>
 
 namespace drogon
 {
@@ -84,16 +85,25 @@ class DROGON_EXPORT ResponseStream
         close();
     }
 
+    bool send(const char *data, size_t length)
+    {
+        if (!asyncStream_ || length == 0)
+        {
+            return asyncStream_ != nullptr;
+        }
+        // Build chunk header: hex length + CRLF
+        char header[32];
+        int headerLen = snprintf(header, sizeof(header), "%zx\r\n", length);
+        // Send header, body (zero-copy from caller buffer), trailer
+        static const char crlf[] = "\r\n";
+        asyncStream_->send(header, headerLen);
+        asyncStream_->send(data, length);
+        return asyncStream_->send(crlf, 2);
+    }
+
     bool send(const std::string &data)
     {
-        if (!asyncStream_)
-        {
-            return false;
-        }
-        std::ostringstream oss;
-        oss << std::hex << data.length() << "\r\n";
-        oss << data << "\r\n";
-        return asyncStream_->send(oss.str());
+        return send(data.data(), data.length());
     }
 
     void close()
