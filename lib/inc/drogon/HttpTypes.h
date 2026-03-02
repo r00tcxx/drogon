@@ -208,6 +208,7 @@ enum class ReqResult
     HandshakeError,
     InvalidCertificate,
     EncryptionFailure,
+    UserAborted,
 };
 
 enum class WebSocketMessageType
@@ -240,6 +241,8 @@ inline std::string_view to_string_view(drogon::ReqResult result)
             return "Invalid certificate";
         case ReqResult::EncryptionFailure:
             return "Unrecoverable encryption failure";
+        case ReqResult::UserAborted:
+            return "User aborted";
         default:
             return "Unknown error";
     }

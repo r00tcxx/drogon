@@ -62,6 +62,11 @@ class HttpResponseParser : public trantor::NonCopyable
         dataCallback_ = std::move(cb);
     }
 
+    bool isAborted() const
+    {
+        return aborted_;
+    }
+
     void reset();
 
     const HttpResponseImplPtr &responseImpl() const
@@ -79,6 +84,7 @@ class HttpResponseParser : public trantor::NonCopyable
     size_t currentChunkLength_{0};
     std::weak_ptr<trantor::TcpConnection> conn_;
     HttpReqDataCallback dataCallback_;
+    bool aborted_{false};
 };
 
 }  // namespace drogon

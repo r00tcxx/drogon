@@ -841,8 +841,18 @@ void HttpClientImpl::onRecvMessage(const trantor::TcpConnectionPtr &connPtr,
         }
         if (!responseParser->parseResponse(msg))
         {
-            onError(ReqResult::BadResponse);
             bytesReceived_ += (msgSize - msg->readableBytes());
+            if (responseParser->isAborted())
+            {
+                // User aborted via dataCallback returning false
+                auto ctx = std::move(firstReq);
+                pipeliningCallbacks_.pop();
+                responseParser->reset();
+                ctx.callback(ReqResult::UserAborted, nullptr);
+                connPtr->shutdown();
+                return;
+            }
+            onError(ReqResult::BadResponse);
             return;
         }
         if (responseParser->gotAll())
