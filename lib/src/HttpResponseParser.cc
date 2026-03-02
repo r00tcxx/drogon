@@ -31,6 +31,7 @@ void HttpResponseParser::reset()
     leftBodyLength_ = 0;
     currentChunkLength_ = 0;
     dataCallback_ = nullptr;
+    aborted_ = false;
 }
 
 HttpResponseParser::HttpResponseParser(const trantor::TcpConnectionPtr &connPtr)
@@ -80,6 +81,10 @@ bool HttpResponseParser::parseResponseOnClose()
 {
     if (status_ == HttpResponseParseStatus::kExpectClose)
     {
+        if (dataCallback_)
+        {
+            dataCallback_(nullptr, 0, true);
+        }
         status_ = HttpResponseParseStatus::kGotAll;
         return true;
     }
@@ -212,15 +217,29 @@ bool HttpResponseParser::parseResponse(MsgBuffer *buf)
             }
             if (dataCallback_)
             {
+                bool done = false;
                 if (leftBodyLength_ >= buf->readableBytes())
                 {
-                    dataCallback_(buf->peek(), buf->readableBytes());
                     leftBodyLength_ -= buf->readableBytes();
+                    done = (leftBodyLength_ == 0);
+                    if (!dataCallback_(buf->peek(), buf->readableBytes(), done))
+                    {
+                        aborted_ = true;
+                        buf->retrieveAll();
+                        return false;
+                    }
                     buf->retrieveAll();
                 }
                 else
                 {
-                    dataCallback_(buf->peek(), leftBodyLength_);
+                    done = true;
+                    if (!dataCallback_(buf->peek(), leftBodyLength_, done))
+                    {
+                        aborted_ = true;
+                        buf->retrieve(leftBodyLength_);
+                        leftBodyLength_ = 0;
+                        return false;
+                    }
                     buf->retrieve(leftBodyLength_);
                     leftBodyLength_ = 0;
                 }
@@ -261,7 +280,12 @@ bool HttpResponseParser::parseResponse(MsgBuffer *buf)
         {
             if (dataCallback_)
             {
-                dataCallback_(buf->peek(), buf->readableBytes());
+                if (!dataCallback_(buf->peek(), buf->readableBytes(), false))
+                {
+                    aborted_ = true;
+                    buf->retrieveAll();
+                    return false;
+                }
             }
             else
             {
@@ -318,7 +342,12 @@ bool HttpResponseParser::parseResponse(MsgBuffer *buf)
                 {
                     if (dataCallback_)
                     {
-                        dataCallback_(buf->peek(), currentChunkLength_);
+                        if (!dataCallback_(buf->peek(), currentChunkLength_, false))
+                        {
+                            aborted_ = true;
+                            buf->retrieve(currentChunkLength_ + 2);
+                            return false;
+                        }
                     }
                     else
                     {
@@ -354,6 +383,10 @@ bool HttpResponseParser::parseResponse(MsgBuffer *buf)
             {
                 buf->retrieveUntil(crlf + 2);
                 status_ = HttpResponseParseStatus::kGotAll;
+                if (dataCallback_)
+                {
+                    dataCallback_(nullptr, 0, true);
+                }
                 responsePtr_->addHeader("content-length",
                                         std::to_string(
                                             responsePtr_->getBody().length()));
