@@ -29,6 +29,7 @@ void HttpResponseParser::reset()
     leftBodyLength_ = 0;
     currentChunkLength_ = 0;
     dataCallback_ = nullptr;
+    headerCallback_ = nullptr;
     aborted_ = false;
 }
 
@@ -184,6 +185,20 @@ bool HttpResponseParser::parseResponse(MsgBuffer *buf)
                         status_ = HttpResponseParseStatus::kGotAll;
                         hasMore = false;
                     }
+                    // Headers fully parsed. Invoke headerCallback_ so
+                    // the caller can inspect status/headers and decide
+                    // whether to continue streaming via dataCallback_.
+                    if (headerCallback_)
+                    {
+                        if (!headerCallback_(responsePtr_))
+                        {
+                            // Caller chose not to stream — disable
+                            // dataCallback_ so the body is buffered
+                            // into the response object instead.
+                            dataCallback_ = nullptr;
+                        }
+                        headerCallback_ = nullptr;
+                    }
                 }
                 buf->retrieveUntil(crlf + 2);
             }
@@ -326,7 +341,9 @@ bool HttpResponseParser::parseResponse(MsgBuffer *buf)
                 {
                     if (dataCallback_)
                     {
-                        if (!dataCallback_(buf->peek(), currentChunkLength_, false))
+                        if (!dataCallback_(buf->peek(),
+                                           currentChunkLength_,
+                                           false))
                         {
                             aborted_ = true;
                             buf->retrieve(currentChunkLength_ + 2);

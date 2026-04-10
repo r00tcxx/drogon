@@ -66,11 +66,25 @@ struct HttpStreamRespAwaiter : public CallbackAwaiter<HttpResponsePtr>
     {
     }
 
+    HttpStreamRespAwaiter(HttpClient *client,
+                          HttpRequestPtr req,
+                          HttpRespHeaderCallback headerCb,
+                          HttpReqDataCallback dataCb,
+                          double timeout)
+        : client_(client),
+          req_(std::move(req)),
+          headerCb_(std::move(headerCb)),
+          dataCb_(std::move(dataCb)),
+          timeout_(timeout)
+    {
+    }
+
     void await_suspend(std::coroutine_handle<> handle);
 
   private:
     HttpClient *client_;
     HttpRequestPtr req_;
+    HttpRespHeaderCallback headerCb_;
     HttpReqDataCallback dataCb_;
     double timeout_;
 };
@@ -158,6 +172,33 @@ class DROGON_EXPORT HttpClient : public trantor::NonCopyable
                              double timeout = 0) = 0;
 
     /**
+     * @brief Send a request asynchronously with a header callback that is
+     * invoked once all response headers have been received. If the header
+     * callback returns true, the dataCallback is used for streaming body
+     * data. If it returns false, the body is buffered into the response
+     * object instead (dataCallback will not be called).
+     *
+     * @param req The request sent to the server.
+     * @param headerCallback Called once response headers are fully received.
+     *   Return true to stream body via dataCallback, false to buffer body.
+     * @param dataCallback Called for each chunk of response body data.
+     * @param callback Called when the response is fully received.
+     * @param timeout In seconds. 0 disables timeout.
+     */
+    virtual void sendRequest(const HttpRequestPtr &req,
+                             const HttpRespHeaderCallback &headerCallback,
+                             const HttpReqDataCallback &dataCallback,
+                             const HttpReqCallback &callback,
+                             double timeout = 0) = 0;
+
+    /// @brief Send a request with header callback via move callbacks.
+    virtual void sendRequest(const HttpRequestPtr &req,
+                             HttpRespHeaderCallback &&headerCallback,
+                             HttpReqDataCallback &&dataCallback,
+                             HttpReqCallback &&callback,
+                             double timeout = 0) = 0;
+
+    /**
      * @brief Send a request synchronously to the server and return the
      * response.
      *
@@ -225,6 +266,33 @@ class DROGON_EXPORT HttpClient : public trantor::NonCopyable
     {
         return internal::HttpStreamRespAwaiter(this,
                                                std::move(req),
+                                               std::move(dataCallback),
+                                               timeout);
+    }
+
+    /**
+     * @brief Send a request via coroutines with a header callback and
+     * streaming body data. The headerCallback is invoked once all response
+     * headers have been received. If it returns true, body data is
+     * delivered via dataCallback in streaming fashion. If it returns false,
+     * the body is buffered into the response object returned by co_await.
+     *
+     * @param req The request sent to the server.
+     * @param headerCallback Called when response headers are ready.
+     *   Return true to stream body, false to buffer it.
+     * @param dataCallback Called for each chunk of response body data.
+     * @param timeout In seconds. 0 disables timeout.
+     * @return internal::HttpStreamRespAwaiter
+     */
+    internal::HttpStreamRespAwaiter sendRequestStreamCoro(
+        HttpRequestPtr req,
+        HttpRespHeaderCallback headerCallback,
+        HttpReqDataCallback dataCallback,
+        double timeout = 0)
+    {
+        return internal::HttpStreamRespAwaiter(this,
+                                               std::move(req),
+                                               std::move(headerCallback),
                                                std::move(dataCallback),
                                                timeout);
     }
@@ -469,17 +537,29 @@ inline void internal::HttpStreamRespAwaiter::await_suspend(
 {
     assert(client_ != nullptr);
     assert(req_ != nullptr);
-    client_->sendRequest(
-        req_,
-        std::move(dataCb_),
-        [handle, this](ReqResult result, const HttpResponsePtr &resp) {
-            if (result == ReqResult::Ok)
-                setValue(resp);
-            else
-                setException(std::make_exception_ptr(HttpException(result)));
-            handle.resume();
-        },
-        timeout_);
+    auto finalCb = [handle, this](ReqResult result,
+                                  const HttpResponsePtr &resp) {
+        if (result == ReqResult::Ok)
+            setValue(resp);
+        else
+            setException(std::make_exception_ptr(HttpException(result)));
+        handle.resume();
+    };
+    if (headerCb_)
+    {
+        client_->sendRequest(req_,
+                             std::move(headerCb_),
+                             std::move(dataCb_),
+                             std::move(finalCb),
+                             timeout_);
+    }
+    else
+    {
+        client_->sendRequest(req_,
+                             std::move(dataCb_),
+                             std::move(finalCb),
+                             timeout_);
+    }
 }
 #endif
 
