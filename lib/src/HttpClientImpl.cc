@@ -324,6 +324,50 @@ void HttpClientImpl::sendRequest(const drogon::HttpRequestPtr &req,
     });
 }
 
+void HttpClientImpl::sendRequest(
+    const drogon::HttpRequestPtr &req,
+    const drogon::HttpRespHeaderCallback &headerCallback,
+    const drogon::HttpReqDataCallback &dataCallback,
+    const drogon::HttpReqCallback &callback,
+    double timeout)
+{
+    auto thisPtr = shared_from_this();
+    loop_->runInLoop([thisPtr,
+                      req,
+                      headerCallback = headerCallback,
+                      dataCallback = dataCallback,
+                      callback = callback,
+                      timeout]() mutable {
+        thisPtr->sendRequestInLoop(req,
+                                   std::move(headerCallback),
+                                   std::move(dataCallback),
+                                   std::move(callback),
+                                   timeout);
+    });
+}
+
+void HttpClientImpl::sendRequest(
+    const drogon::HttpRequestPtr &req,
+    drogon::HttpRespHeaderCallback &&headerCallback,
+    drogon::HttpReqDataCallback &&dataCallback,
+    drogon::HttpReqCallback &&callback,
+    double timeout)
+{
+    auto thisPtr = shared_from_this();
+    loop_->runInLoop([thisPtr,
+                      req,
+                      headerCallback = std::move(headerCallback),
+                      dataCallback = std::move(dataCallback),
+                      callback = std::move(callback),
+                      timeout]() mutable {
+        thisPtr->sendRequestInLoop(req,
+                                   std::move(headerCallback),
+                                   std::move(dataCallback),
+                                   std::move(callback),
+                                   timeout);
+    });
+}
+
 struct RequestCallbackParams
 {
     RequestCallbackParams(HttpReqCallback &&cb,
@@ -568,6 +612,191 @@ void HttpClientImpl::sendRequestInLoop(const HttpRequestPtr &req,
             }
         });
     sendRequestInLoop(req,
+                      std::move(dataCallback),
+                      [callbackParamsPtr](ReqResult r,
+                                          const HttpResponsePtr &resp) {
+                          if (callbackParamsPtr->timeoutFlag)
+                          {
+                              return;
+                          }
+                          callbackParamsPtr->timeoutFlag = true;
+                          (callbackParamsPtr->callback)(r, resp);
+                      });
+}
+
+void HttpClientImpl::sendRequestInLoop(const HttpRequestPtr &req,
+                                       HttpRespHeaderCallback &&headerCallback,
+                                       HttpReqDataCallback &&dataCallback,
+                                       HttpReqCallback &&callback)
+{
+    loop_->assertInLoopThread();
+
+    if (!static_cast<drogon::HttpRequestImpl *>(req.get())->passThrough())
+    {
+        req->addHeader("connection", "Keep-Alive");
+        if (!userAgent_.empty())
+            req->addHeader("user-agent", userAgent_);
+    }
+    if (req->getHeader("host").empty())
+    {
+        if (onDefaultPort())
+        {
+            req->addHeader("host", host());
+        }
+        else
+        {
+            req->addHeader("host", host() + ":" + std::to_string(port()));
+        }
+    }
+
+    for (auto &cookie : validCookies_)
+    {
+        if ((cookie.expiresDate().microSecondsSinceEpoch() == 0 ||
+             cookie.expiresDate() > trantor::Date::now()) &&
+            (cookie.path().empty() || req->path().find(cookie.path()) == 0))
+        {
+            req->addCookie(cookie.key(), cookie.value());
+        }
+    }
+
+    auto thisPtr = shared_from_this();
+    RequestContext ctx(req,
+                       std::move(headerCallback),
+                       std::move(dataCallback),
+                       [thisPtr, callback = std::move(callback)](
+                           ReqResult result, const HttpResponsePtr &response) {
+                           callback(result, response);
+                       });
+
+    if (!tcpClientPtr_)
+    {
+        requestsBuffer_.push_back(std::move(ctx));
+
+        if (domain_.empty() || !isDomainName_)
+        {
+            if (isValidIpAddr(serverAddr_))
+            {
+                createTcpClient();
+            }
+            else
+            {
+                auto cb = std::move(requestsBuffer_.back().callback);
+                requestsBuffer_.pop_back();
+                cb(ReqResult::BadServerAddress, nullptr);
+                assert(requestsBuffer_.empty());
+            }
+            return;
+        }
+
+        if (dns_)
+        {
+            return;
+        }
+
+        dns_ = true;
+        if (!resolverPtr_)
+        {
+            resolverPtr_ =
+                trantor::Resolver::newResolver(loop_, kDefaultDNSTimeout);
+        }
+        resolverPtr_->resolve(
+            domain_, [thisPtr](const trantor::InetAddress &addr) {
+                thisPtr->loop_->runInLoop([thisPtr, addr]() {
+                    auto port = thisPtr->serverAddr_.portNetEndian();
+                    thisPtr->serverAddr_ = addr;
+                    thisPtr->serverAddr_.setPortNetEndian(port);
+                    LOG_TRACE << "dns:domain=" << thisPtr->domain_
+                              << ";ip=" << thisPtr->serverAddr_.toIp();
+                    thisPtr->dns_ = false;
+
+                    if (isValidIpAddr(thisPtr->serverAddr_))
+                    {
+                        thisPtr->createTcpClient();
+                        return;
+                    }
+
+                    while (!(thisPtr->requestsBuffer_).empty())
+                    {
+                        auto &reqCtx = (thisPtr->requestsBuffer_).front();
+                        reqCtx.callback(ReqResult::BadServerAddress, nullptr);
+                        (thisPtr->requestsBuffer_).pop_front();
+                    }
+                });
+            });
+
+        return;
+    }
+
+    auto connPtr = tcpClientPtr_->connection();
+    if (!connPtr || connPtr->disconnected())
+    {
+        requestsBuffer_.push_back(std::move(ctx));
+        return;
+    }
+
+    if (pipeliningCallbacks_.size() <= pipeliningDepth_ &&
+        requestsBuffer_.empty())
+    {
+        sendReq(connPtr, req);
+        pipeliningCallbacks_.push(std::move(ctx));
+    }
+    else
+    {
+        requestsBuffer_.push_back(std::move(ctx));
+    }
+}
+
+void HttpClientImpl::sendRequestInLoop(const HttpRequestPtr &req,
+                                       HttpRespHeaderCallback &&headerCallback,
+                                       HttpReqDataCallback &&dataCallback,
+                                       HttpReqCallback &&callback,
+                                       double timeout)
+{
+    if (timeout <= 0)
+    {
+        sendRequestInLoop(req,
+                          std::move(headerCallback),
+                          std::move(dataCallback),
+                          std::move(callback));
+        return;
+    }
+
+    auto callbackParamsPtr =
+        std::make_shared<RequestCallbackParams>(std::move(callback),
+                                                shared_from_this(),
+                                                req);
+
+    loop_->runAfter(
+        timeout,
+        [weakCallbackBackPtr =
+             std::weak_ptr<RequestCallbackParams>(callbackParamsPtr)] {
+            auto callbackParamsPtr = weakCallbackBackPtr.lock();
+            if (callbackParamsPtr != nullptr)
+            {
+                auto &thisPtr = callbackParamsPtr->clientPtr;
+                if (callbackParamsPtr->timeoutFlag)
+                {
+                    return;
+                }
+
+                callbackParamsPtr->timeoutFlag = true;
+
+                for (auto iter = thisPtr->requestsBuffer_.begin();
+                     iter != thisPtr->requestsBuffer_.end();
+                     ++iter)
+                {
+                    if (iter->request == callbackParamsPtr->requestPtr)
+                    {
+                        thisPtr->requestsBuffer_.erase(iter);
+                        break;
+                    }
+                }
+
+                (callbackParamsPtr->callback)(ReqResult::Timeout, nullptr);
+            }
+        });
+    sendRequestInLoop(req,
+                      std::move(headerCallback),
                       std::move(dataCallback),
                       [callbackParamsPtr](ReqResult r,
                                           const HttpResponsePtr &resp) {
@@ -838,6 +1067,10 @@ void HttpClientImpl::onRecvMessage(const trantor::TcpConnectionPtr &connPtr,
         if (firstReq.dataCallback)
         {
             responseParser->setDataCallback(firstReq.dataCallback);
+        }
+        if (firstReq.headerCallback)
+        {
+            responseParser->setHeaderCallback(firstReq.headerCallback);
         }
         if (!responseParser->parseResponse(msg))
         {

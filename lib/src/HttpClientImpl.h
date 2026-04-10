@@ -36,8 +36,10 @@ struct RequestContext
     HttpRequestPtr request;
     HttpReqCallback callback;
     HttpReqDataCallback dataCallback;
+    HttpRespHeaderCallback headerCallback;
 
     RequestContext() = default;
+
     RequestContext(HttpRequestPtr req, HttpReqCallback cb)
         : request(std::move(req)), callback(std::move(cb))
     {
@@ -49,6 +51,17 @@ struct RequestContext
         : request(std::move(req)),
           callback(std::move(cb)),
           dataCallback(std::move(dataCb))
+    {
+    }
+
+    RequestContext(HttpRequestPtr req,
+                   HttpRespHeaderCallback headerCb,
+                   HttpReqDataCallback dataCb,
+                   HttpReqCallback cb)
+        : request(std::move(req)),
+          callback(std::move(cb)),
+          dataCallback(std::move(dataCb)),
+          headerCallback(std::move(headerCb))
     {
     }
 };
@@ -77,6 +90,16 @@ class HttpClientImpl final : public HttpClient,
                      const HttpReqCallback &callback,
                      double timeout = 0) override;
     void sendRequest(const HttpRequestPtr &req,
+                     HttpReqDataCallback &&dataCallback,
+                     HttpReqCallback &&callback,
+                     double timeout = 0) override;
+    void sendRequest(const HttpRequestPtr &req,
+                     const HttpRespHeaderCallback &headerCallback,
+                     const HttpReqDataCallback &dataCallback,
+                     const HttpReqCallback &callback,
+                     double timeout = 0) override;
+    void sendRequest(const HttpRequestPtr &req,
+                     HttpRespHeaderCallback &&headerCallback,
                      HttpReqDataCallback &&dataCallback,
                      HttpReqCallback &&callback,
                      double timeout = 0) override;
@@ -181,6 +204,15 @@ class HttpClientImpl final : public HttpClient,
                            HttpReqDataCallback &&dataCallback,
                            HttpReqCallback &&callback);
     void sendRequestInLoop(const HttpRequestPtr &req,
+                           HttpReqDataCallback &&dataCallback,
+                           HttpReqCallback &&callback,
+                           double timeout);
+    void sendRequestInLoop(const HttpRequestPtr &req,
+                           HttpRespHeaderCallback &&headerCallback,
+                           HttpReqDataCallback &&dataCallback,
+                           HttpReqCallback &&callback);
+    void sendRequestInLoop(const HttpRequestPtr &req,
+                           HttpRespHeaderCallback &&headerCallback,
                            HttpReqDataCallback &&dataCallback,
                            HttpReqCallback &&callback,
                            double timeout);

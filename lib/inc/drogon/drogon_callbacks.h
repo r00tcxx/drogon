@@ -33,6 +33,7 @@ using FilterChainCallback = std::function<void()>;
 using HttpReqCallback = std::function<void(ReqResult, const HttpResponsePtr &)>;
 using HttpReqDataCallback =
     std::function<bool(const char *data, size_t length, bool done)>;
+using HttpRespHeaderCallback = std::function<bool(const HttpResponsePtr &)>;
 
 using MiddlewareCallback = std::function<void(const HttpResponsePtr &)>;
 using MiddlewareNextCallback =

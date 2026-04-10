@@ -62,6 +62,11 @@ class HttpResponseParser : public trantor::NonCopyable
         dataCallback_ = std::move(cb);
     }
 
+    void setHeaderCallback(HttpRespHeaderCallback cb)
+    {
+        headerCallback_ = std::move(cb);
+    }
+
     bool isAborted() const
     {
         return aborted_;
@@ -84,6 +89,7 @@ class HttpResponseParser : public trantor::NonCopyable
     size_t currentChunkLength_{0};
     std::weak_ptr<trantor::TcpConnection> conn_;
     HttpReqDataCallback dataCallback_;
+    HttpRespHeaderCallback headerCallback_;
     bool aborted_{false};
 };
 
