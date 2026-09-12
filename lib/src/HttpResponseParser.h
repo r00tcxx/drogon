@@ -34,6 +34,7 @@ class HttpResponseParser : public trantor::NonCopyable
         kExpectBody,
         kExpectChunkLen,
         kExpectChunkBody,
+        kExpectChunkEnd,
         kExpectLastEmptyChunk,
         kExpectClose,
         kGotAll,

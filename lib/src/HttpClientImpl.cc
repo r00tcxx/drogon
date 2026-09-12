@@ -55,7 +55,7 @@ void HttpClientImpl::createTcpClient()
     std::weak_ptr<HttpClientImpl> weakPtr = thisPtr;
     tcpClientPtr_->setSockOptCallback([weakPtr](int fd) {
         auto thisPtr = weakPtr.lock();
-        if (!thisPtr)
+        if (!thisPtr || thisPtr->cancelled_)
             return;
         if (thisPtr->sockOptCallback_)
             thisPtr->sockOptCallback_(fd);
@@ -63,7 +63,7 @@ void HttpClientImpl::createTcpClient()
     tcpClientPtr_->setConnectionCallback(
         [weakPtr](const trantor::TcpConnectionPtr &connPtr) {
             auto thisPtr = weakPtr.lock();
-            if (!thisPtr)
+            if (!thisPtr || thisPtr->cancelled_)
                 return;
             if (connPtr->connected())
             {
@@ -111,7 +111,7 @@ void HttpClientImpl::createTcpClient()
         });
     tcpClientPtr_->setConnectionErrorCallback([weakPtr]() {
         auto thisPtr = weakPtr.lock();
-        if (!thisPtr)
+        if (!thisPtr || thisPtr->cancelled_)
             return;
         // can't connect to server
         thisPtr->onError(ReqResult::BadServerAddress);
@@ -120,14 +120,14 @@ void HttpClientImpl::createTcpClient()
         [weakPtr](const trantor::TcpConnectionPtr &connPtr,
                   trantor::MsgBuffer *msg) {
             auto thisPtr = weakPtr.lock();
-            if (thisPtr)
+            if (thisPtr && !thisPtr->cancelled_)
             {
                 thisPtr->onRecvMessage(connPtr, msg);
             }
         });
     tcpClientPtr_->setSSLErrorCallback([weakPtr](SSLError err) {
         auto thisPtr = weakPtr.lock();
-        if (!thisPtr)
+        if (!thisPtr || thisPtr->cancelled_)
             return;
         if (err == trantor::SSLError::kSSLHandshakeError)
             thisPtr->onError(ReqResult::HandshakeError);
@@ -254,6 +254,29 @@ HttpClientImpl::HttpClientImpl(trantor::EventLoop *loop,
         isDomainName_ = true;
     }
     LOG_TRACE << "userSSL=" << useSSL_ << " domain=" << domain_;
+}
+
+void HttpClientImpl::cancelAll()
+{
+    loop_->queueInLoop([self = shared_from_this()] {
+        if (self->cancelled_)
+            return;
+        self->cancelled_ = true;
+        auto pending = std::move(self->requestsBuffer_);
+        auto active = std::move(self->pipeliningCallbacks_);
+        self->requestsBuffer_.clear();
+        self->pipeliningCallbacks_ = {};
+        self->tcpClientPtr_.reset();
+        self->resolverPtr_.reset();
+        for (auto &ctx : pending)
+            ctx.callback(ReqResult::UserAborted, nullptr);
+        while (!active.empty())
+        {
+            auto ctx = std::move(active.front());
+            active.pop();
+            ctx.callback(ReqResult::UserAborted, nullptr);
+        }
+    });
 }
 
 HttpClientImpl::~HttpClientImpl()
@@ -452,6 +475,11 @@ void HttpClientImpl::sendRequestInLoop(const HttpRequestPtr &req,
     loop_->assertInLoopThread();
 
     // Reuse the main sendRequestInLoop logic but with RequestContext
+    if (cancelled_)
+    {
+        callback(ReqResult::UserAborted, nullptr);
+        return;
+    }
     if (!static_cast<drogon::HttpRequestImpl *>(req.get())->passThrough())
     {
         req->addHeader("connection", "Keep-Alive");
@@ -522,6 +550,8 @@ void HttpClientImpl::sendRequestInLoop(const HttpRequestPtr &req,
         resolverPtr_->resolve(
             domain_, [thisPtr](const trantor::InetAddress &addr) {
                 thisPtr->loop_->runInLoop([thisPtr, addr]() {
+                    if (thisPtr->cancelled_)
+                        return;
                     auto port = thisPtr->serverAddr_.portNetEndian();
                     thisPtr->serverAddr_ = addr;
                     thisPtr->serverAddr_.setPortNetEndian(port);
@@ -631,6 +661,11 @@ void HttpClientImpl::sendRequestInLoop(const HttpRequestPtr &req,
 {
     loop_->assertInLoopThread();
 
+    if (cancelled_)
+    {
+        callback(ReqResult::UserAborted, nullptr);
+        return;
+    }
     if (!static_cast<drogon::HttpRequestImpl *>(req.get())->passThrough())
     {
         req->addHeader("connection", "Keep-Alive");
@@ -702,6 +737,8 @@ void HttpClientImpl::sendRequestInLoop(const HttpRequestPtr &req,
         resolverPtr_->resolve(
             domain_, [thisPtr](const trantor::InetAddress &addr) {
                 thisPtr->loop_->runInLoop([thisPtr, addr]() {
+                    if (thisPtr->cancelled_)
+                        return;
                     auto port = thisPtr->serverAddr_.portNetEndian();
                     thisPtr->serverAddr_ = addr;
                     thisPtr->serverAddr_.setPortNetEndian(port);
@@ -835,6 +872,11 @@ void HttpClientImpl::sendRequestInLoop(const drogon::HttpRequestPtr &req,
                                        drogon::HttpReqCallback &&callback)
 {
     loop_->assertInLoopThread();
+    if (cancelled_)
+    {
+        callback(ReqResult::UserAborted, nullptr);
+        return;
+    }
     if (!static_cast<drogon::HttpRequestImpl *>(req.get())->passThrough())
     {
         req->addHeader("connection", "Keep-Alive");
@@ -910,6 +952,8 @@ void HttpClientImpl::sendRequestInLoop(const drogon::HttpRequestPtr &req,
         resolverPtr_->resolve(
             domain_, [thisPtr](const trantor::InetAddress &addr) {
                 thisPtr->loop_->runInLoop([thisPtr, addr]() {
+                    if (thisPtr->cancelled_)
+                        return;
                     // Retrieve port from old serverAddr_
                     auto port = thisPtr->serverAddr_.portNetEndian();
                     thisPtr->serverAddr_ = addr;
