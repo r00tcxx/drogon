@@ -392,6 +392,11 @@ class DROGON_EXPORT HttpClient : public trantor::NonCopyable
     /// Get the event loop of the client;
     virtual trantor::EventLoop *getLoop() = 0;
 
+    /// Cancel all pending requests and close this client permanently.
+    /// Completion callbacks receive UserAborted; cancellation is queued on the
+    /// client's event loop so it is safe to call from a data callback.
+    virtual void cancelAll() = 0;
+
     /// Get the number of bytes sent or received
     virtual size_t bytesSent() const = 0;
     virtual size_t bytesReceived() const = 0;
